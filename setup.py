@@ -9,5 +9,5 @@ setup(
     author='tumbler',
     author_email='zimbler@gmail.com',
     description='High-availability wrapper of asyncio_redis',
-    requires=['asyncio>=0.4', 'asyncio_redis>=0.10']
+    install_requires=['asyncio>=0.4', 'asyncio_redis>=0.10']
 )
