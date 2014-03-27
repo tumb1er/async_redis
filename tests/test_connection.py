@@ -1,17 +1,17 @@
 # coding: utf-8
 
 # $Id: $
-import concurrent.futures
 import os
 from unittest import TestCase
+
 import asyncio
 from asyncio_redis import Connection, NotConnectedError, Pool
+
 from tests.base import async
 from async_redis.wrappers import ConnectionWrapper, PoolWrapper
 
 
 class ConnectionTestCase(TestCase):
-
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -80,34 +80,34 @@ class ConnectionTestCase(TestCase):
             # который выполняется достаточно долго
             yield from asyncio.sleep(self.conn_wait)
             self.assertEqual(self.open_fd(), current)
-            print(self.open_fd())
 
     @async
     def testConnectionWrapperTimeoutStable(self):
         current = self.open_fd()
         for _ in range(10):
-            c = yield from ConnectionWrapper.create(timeout=self.cmd_wait, auto_reconnect=False)
+            c = yield from ConnectionWrapper.create(timeout=self.cmd_wait,
+                                                    auto_reconnect=False)
             self.assertEqual(self.open_fd(), current + 1)
             with self.assertRaises(NotConnectedError):
                 yield from c.blpop(["key1"], timeout=int(self.cmd_wait + 0.6))
             yield from asyncio.sleep(self.conn_wait)
             self.assertEqual(self.open_fd(), current)
-            print(self.open_fd())
 
     @async
     def testConnectionWrapperTimeoutReconnect(self):
-        c = yield from ConnectionWrapper.create(timeout=self.cmd_wait, auto_reconnect=True)
+        c = yield from ConnectionWrapper.create(timeout=self.cmd_wait,
+                                                auto_reconnect=True)
         current = self.open_fd()
         for _ in range(10):
             with self.assertRaises(NotConnectedError):
                 yield from c.blpop(["key1"], timeout=int(self.cmd_wait + 0.6))
             yield from asyncio.sleep(self.conn_wait)
             self.assertEqual(self.open_fd(), current - 1)
-            print(self.open_fd())
 
     @async
     def testPoolWrapperTimeoutClose(self):
-        c = yield from PoolWrapper.create(timeout=self.cmd_wait, poolsize=self.poolsize,
+        c = yield from PoolWrapper.create(timeout=self.cmd_wait,
+                                          poolsize=self.poolsize,
                                           auto_reconnect=False)
         current = self.open_fd()
         for i in range(self.poolsize):
@@ -115,15 +115,13 @@ class ConnectionTestCase(TestCase):
                 yield from c.blpop(["key1"], timeout=int(self.cmd_wait + 0.6))
             yield from asyncio.sleep(self.conn_wait)
             self.assertEqual(self.open_fd(), current - i - 1)
-            print(self.open_fd())
 
     @async
     def testPoolWrapperTimeoutReconnect(self):
-        print(self.open_fd())
-        c = yield from PoolWrapper.create(timeout=self.cmd_wait, poolsize=self.poolsize,
+        c = yield from PoolWrapper.create(timeout=self.cmd_wait,
+                                          poolsize=self.poolsize,
                                           auto_reconnect=True)
         current = self.open_fd()
-        print("C=", current)
         for i in range(20):
             with self.assertRaises(NotConnectedError):
                 yield from c.blpop(["key1"], timeout=int(self.cmd_wait + 0.6))
@@ -132,7 +130,5 @@ class ConnectionTestCase(TestCase):
             yield from asyncio.sleep(self.conn_wait)
             # Число открытых соединений опускается до нуля, а затем
             # скачком открывается сразу poolsize соединений.
-            self.assertEqual(self.open_fd(), current - (i + 1) % (self.poolsize + 1))
-            print(self.open_fd())
-
-
+            self.assertEqual(self.open_fd(),
+                             current - (i + 1) % (self.poolsize + 1))
