@@ -79,12 +79,13 @@ def timeout_aware_conn(cls):
                 else:
                     result = yield from asyncio.wait_for(
                         task, timeout, loop=connection._loop)
-            except (asyncio.futures.TimeoutError, NotConnectedError):
+            except (asyncio.futures.TimeoutError, NotConnectedError) as e:
                 # При возникновении ошибки закрываем соединение на
                 # транспортном уровне.
                 try:
                     if protocol.transport is not None:
-                        protocol.transport.close()
+                        asyncio.get_event_loop().call_soon(
+                            protocol.transport.close)
                 except Exception:
                     logging.exception(
                         "Error while handling redis operation timeout")
