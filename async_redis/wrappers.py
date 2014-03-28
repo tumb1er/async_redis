@@ -2,7 +2,9 @@
 
 import functools
 import logging
+import socket
 import asyncio
+from asyncio.log import logger
 
 from asyncio_redis.exceptions import NotConnectedError
 from asyncio_redis.protocol import _all_commands, RedisProtocol
@@ -196,13 +198,6 @@ class ConnectionWrapper(Connection):
     """
     protocol = RedisProtocol
 
-    def __init__(self, *args, **kwargs):
-        try:
-            kwargs.pop('timeout')
-        except KeyError:
-            pass
-        super().__init__(*args, **kwargs)
-
     @classmethod
     @asyncio.coroutine
     def create(cls, host='localhost', port=6379, password=None, db=0,
@@ -234,22 +229,104 @@ class ConnectionWrapper(Connection):
             connection_lost_callback=connection_lost)
 
         # Connect
-        yield from connection._reconnect()
+        try:
+            yield from asyncio.wait_for(connection._reconnect(),
+                                        timeout=connect_timeout)
+        except asyncio.futures.TimeoutError:
+            raise NotConnectedError()
 
         return connection
 
     @asyncio.coroutine
+    def create_connection(self, protocol_factory, host, port):
+        f1 = self._loop.getaddrinfo(
+                host, port)
+        yield from asyncio.wait([f1], loop=self._loop)
+        infos = f1.result()
+        if not infos:
+            raise OSError('getaddrinfo() returned empty list')
+        exceptions = []
+        for family, type, proto, cname, address in infos:
+            try:
+                sock = socket.socket(family=family, type=type, proto=proto)
+                sock.setblocking(False)
+            except OSError as exc:
+                if sock is not None:
+                    sock.close()
+                exceptions.append(exc)
+            else:
+                break
+        else:
+            if len(exceptions) == 1:
+                raise exceptions[0]
+            else:
+                # If they all have the same str(), raise one.
+                model = str(exceptions[0])
+                if all(str(exc) == model for exc in exceptions):
+                    raise exceptions[0]
+                # Raise a combined exception so the user can see all
+                # the various error messages.
+                raise OSError('Multiple exceptions: {}'.format(
+                    ', '.join(str(exc) for exc in exceptions)))
+
+        try:
+            task = self._loop.sock_connect(sock, address)
+            yield from asyncio.wait_for(task, timeout=self._connect_timeout,
+                                        loop=self._loop)
+
+            task = self._loop.create_connection(protocol_factory,
+                                                             sock=sock)
+            yield from asyncio.wait_for(task, timeout=self._connect_timeout,
+                                        loop=self._loop)
+        except (asyncio.futures.TimeoutError, IOError, asyncio.futures.CancelledError) as e:
+
+            try:
+                self._loop.remove_writer(sock.fileno())
+                pass
+            except Exception as e:
+                pass
+            sock.close()
+            raise
+        except Exception as e:
+            pass
+            raise
+
+
+
+    @asyncio.coroutine
     def _reconnect(self):
-        task = super()._reconnect()
-        #try:
-        timeout = self._connect_timeout or 1
-        done, pending = yield from asyncio.wait([task], timeout=timeout, loop=self._loop)
-        if pending:
-            task = pending.pop()
-            task.set_exception(NotConnectedError())
-            if self.transport is not None:
-                self.transport.close()
-            raise NotConnectedError()
+        self._loop = self._loop or asyncio.get_event_loop()
+        while True:
+            try:
+                logger.log(logging.INFO, 'Connecting to redis')
+                yield from self.create_connection(lambda:self.protocol, self.host, self.port)
+                self._reset_retry_interval()
+                return
+            except OSError as e:
+                # Sleep and try again
+                self._increase_retry_interval()
+                interval = self._get_retry_interval()
+                logger.log(logging.INFO, 'Connecting to redis failed. Retrying in %i seconds' % interval)
+                yield from asyncio.sleep(interval)
+            except Exception as e:
+                raise
+
+        #
+        #
+        # task = super()._reconnect()
+        # #try:
+        # timeout = self._connect_timeout or 1
+        # done, pending = yield from asyncio.wait([task], timeout=timeout, loop=self._loop)
+        # if pending:
+        #     task = pending.pop()
+        #     task.set_exception(NotConnectedError())
+        #     if self.transport is not None:
+        #         self.transport.close()
+        #     raise NotConnectedError()
+
+
+
+
         # except (asyncio.TimeoutError, NotConnectedError):
         #     try:
         #         if self.transport is not None:

@@ -2,6 +2,7 @@
 
 # $Id: $
 import os
+import socket
 import subprocess
 from unittest import TestCase
 
@@ -21,7 +22,7 @@ class FDMixin:
         cls.poolsize = 8
         cls.conn_wait = 0.2
         cls.cmd_wait = 0.3
-        cls.sleep = 1.0
+        cls.sleep = 2.0
 
     def open_fd(self):
         return len(os.listdir('/proc/%s/fd/' % self.pid))
@@ -38,7 +39,7 @@ class ConnectionTestCase(FDMixin, TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.run_command("sudo", "service", "redis-server", "start")
+        cls.run_command("sudo", "service", "redis-server", "restart")
 
     @async
     def testConnectionClose(self):
@@ -122,6 +123,7 @@ class ConnectionTestCase(FDMixin, TestCase):
                 yield from c.blpop(["key1"], timeout=int(self.cmd_wait + 0.6))
             yield from asyncio.sleep(self.sleep)
             # реконнект
+            print(self.open_fd())
             self.assertEqual(self.open_fd(), current)
 
     @async
@@ -139,6 +141,7 @@ class ConnectionTestCase(FDMixin, TestCase):
     @async
     def testPoolWrapperTimeoutReconnect(self):
         c = yield from PoolWrapper.create(timeout=self.cmd_wait,
+                                          connection_timeout=self.conn_wait,
                                           poolsize=self.poolsize,
                                           auto_reconnect=True)
         current = self.open_fd()
@@ -225,6 +228,7 @@ class RedisNotRunningTestCase(FDMixin, TestCase):
                     auto_reconnect=True,
                     timeout=self.conn_wait,
                     connect_timeout=self.conn_wait)
+            print(self.open_fd())
             self.assertEqual(self.open_fd(), current)
 
     @async
@@ -248,6 +252,8 @@ class RedisNotRunningTestCase(FDMixin, TestCase):
                                               poolsize=self.poolsize,
                                               timeout=self.conn_wait,
                                               connection_timeout=self.conn_wait)
+            yield from asyncio.sleep(self.sleep)
+            print(self.open_fd())
             self.assertEqual(self.open_fd(), current)
             self.assertEqual(c.connections_connected, 0)
 
@@ -258,6 +264,7 @@ class RedisStoppedTestCase(FDMixin, TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        cls.sleep = 2.0
         cls.run_command("sudo", "service", "redis-server", "start")
         cls.run_command("sh", "-c", "sudo kill -STOP `sudo cat /var/run/redis/redis.pid`")
 
@@ -367,8 +374,8 @@ class RedisStoppedTestCase(FDMixin, TestCase):
             print(self.open_fd())
             with self.assertRaises(NotConnectedError):
                 yield from c.get('key1')
-            yield from asyncio.sleep(2.0)
-            #self.assertEqual(self.open_fd(), current - i)
+            yield from asyncio.sleep(self.sleep)
+            self.assertEqual(self.open_fd(), current - min(i, self.poolsize - 1) - 1)
             # self.assertEqual(c.connections_connected, 0)
 
     @async
@@ -385,6 +392,7 @@ class RedisStoppedTestCase(FDMixin, TestCase):
                 yield from c.get('key1')
             yield from asyncio.sleep(self.sleep)
 
+
 class NoRouteTestCase(FDMixin, TestCase):
     """ no route to redis host """
 
@@ -392,77 +400,70 @@ class NoRouteTestCase(FDMixin, TestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.host = '22.0.0.22'
+        cls.sleep = 1.0
 
     @async
     def testConnectionStable(self):
         current = self.open_fd()
-        for _ in range(10):
-            c = yield from Connection.create(host=self.host, auto_reconnect=False)
-            self.assertEqual(self.open_fd(), current + 1)
+        for i in range(10):
+            task = Connection.create(host=self.host,
+                                                  auto_reconnect=False)
             with self.assertRaises(asyncio.futures.TimeoutError):
-                yield from asyncio.wait_for(c.get("key1"),
-                                            timeout=self.cmd_wait)
-            c.transport.close()
+                yield from asyncio.wait_for(task, timeout=self.conn_wait)
+            self.assertEqual(self.open_fd(), current + i + 1)
             yield from asyncio.sleep(self.conn_wait)
 
     @async
     def testConnectionReconnect(self):
-        c = yield from Connection.create(host=self.host, auto_reconnect=True)
         current = self.open_fd()
-        for _ in range(10):
-            self.assertEqual(self.open_fd(), current)
-            # Вот этот transport.close() еще надо вызвать, а он не вызывается
-            # потому что c.get() выполняется бесконечно.
-            asyncio.get_event_loop().call_later(self.cmd_wait,
-                                                c.transport.close)
-            with self.assertRaises(asyncio_redis.ConnectionLostError):
-                yield from c.get("key1")
+        for i in range(10):
+            task = Connection.create(host=self.host, auto_reconnect=True)
+            with self.assertRaises(asyncio.futures.TimeoutError):
+                yield from asyncio.wait_for(task, timeout=self.conn_wait)
+            self.assertEqual(self.open_fd(), current + i + 1)
             yield from asyncio.sleep(self.sleep)
 
     @async
     def testPoolStable(self):
-        c = yield from Pool.create(host=self.host, auto_reconnect=False, poolsize=self.poolsize)
         current = self.open_fd()
         for i in range(self.poolsize):
             print(self.open_fd())
             with self.assertRaises(asyncio.futures.TimeoutError):
+                task = Pool.create(host=self.host, auto_reconnect=False,
+                                          poolsize=self.poolsize)
+                c = yield from asyncio.wait_for(task, timeout=self.conn_wait)
                 yield from asyncio.wait_for(c.get("key1"),
                                             timeout=self.cmd_wait)
-            c.transport.close()
             yield from asyncio.sleep(self.sleep)
-            self.assertEqual(self.open_fd(), current - i - 1)
+            self.assertEqual(self.open_fd(), current + i + 1)
 
     @async
     def testPoolReconnect(self):
-        c = yield from Pool.create(host=self.host, auto_reconnect=True, poolsize=self.poolsize)
         current = self.open_fd()
-        for _ in range(20):
+        for i in range(20):
             print(self.open_fd())
-            # опять, нельзя на Task в состоянии CANCELLED сделать set_exception,
-            # что происходит в c.transport.close
-            # поэтому отмену делаем через закрытие по таймеру
-            task = c.get("key1")
-            protocol = task.gi_frame.f_locals['protocol_self']
-            asyncio.get_event_loop().call_later(self.cmd_wait,
-                                                protocol.transport.close)
-            with self.assertRaises(asyncio_redis.ConnectionLostError):
-                yield from task
+            task = Pool.create(host=self.host, auto_reconnect=True,
+                               poolsize=self.poolsize)
+            with self.assertRaises(asyncio.futures.TimeoutError):
+                yield from asyncio.wait_for(task, timeout=self.conn_wait)
             yield from asyncio.sleep(self.sleep)
-            # реконнект в действии
-            self.assertEqual(self.open_fd(), current)
+            # реконнект в действии - к сожалению, task.cancel не закроет
+            # сокет, открытый где-то в недрах asyncio.
+            self.assertEqual(self.open_fd(), current + i + 1)
 
     @async
     def testConnectionWrapperStable(self):
         current = self.open_fd()
-        for _ in range(20):
+        for i in range(20):
             print(self.open_fd())
-            c = yield from ConnectionWrapper.create(
-                host=self.host,
-                    auto_reconnect=False,
-                    timeout=self.conn_wait,
-                    connect_timeout=1.0)
+
+            task = ConnectionWrapper.create(host=self.host,
+                                          auto_reconnect=False,
+                                          timeout=self.conn_wait,
+                                          connect_timeout=self.conn_wait)
             with self.assertRaises(NotConnectedError):
-                yield from c.get('key1')
+                yield from task
+                #yield from asyncio.wait_for(task, timeout=self.conn_wait)
 
             yield from asyncio.sleep(self.sleep)
             self.assertEqual(self.open_fd(), current)
@@ -470,20 +471,20 @@ class NoRouteTestCase(FDMixin, TestCase):
     @async
     def testConnectionWrapperReconnect(self):
         current = self.open_fd()
-        c = yield from ConnectionWrapper.create(
-            host=self.host,
+        # В теории мы законнектились, но не знаем что на той стороне все плохо
+        for i in range(10):
+            task = ConnectionWrapper.create(
+                        host=self.host,
                         auto_reconnect=True,
                         timeout=self.conn_wait,
-                        connect_timeout=2.0)
-        # В теории мы законнектились, но не знаем что на той стороне все плохо
-        self.assertEqual(self.open_fd(), current + 1)
-        for _ in range(10):
+                        connect_timeout=self.conn_wait)
             with self.assertRaises(NotConnectedError):
-                yield from c.get('key1')
+                yield from task
+                # yield from asyncio.wait_for(task, timeout=self.conn_wait + 0.5)
             yield from asyncio.sleep(self.sleep)
             # реконнект
             print(self.open_fd())
-            self.assertEqual(self.open_fd(), current + 1)
+            self.assertEqual(self.open_fd(), current)
 
     @async
     def testPoolWrapperStable(self):
@@ -497,9 +498,8 @@ class NoRouteTestCase(FDMixin, TestCase):
             print(self.open_fd())
             with self.assertRaises(NotConnectedError):
                 yield from c.get('key1')
-            yield from asyncio.sleep(2.0)
-            #self.assertEqual(self.open_fd(), current - i)
-            # self.assertEqual(c.connections_connected, 0)
+            yield from asyncio.sleep(self.sleep)
+            self.assertEqual(self.open_fd(), current)
 
     @async
     def testPoolWrapperReconnect(self):
