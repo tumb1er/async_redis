@@ -145,6 +145,7 @@ class ConnectionTestCase(FDMixin, TestCase):
 
 
 class RedisNotRunningTestCase(FDMixin, TestCase):
+
     @async
     def testConnectionStable(self):
         current = self.open_fd()
@@ -309,16 +310,17 @@ class RedisStoppedTestCase(FDMixin, TestCase):
     @async
     def testConnectionWrapperReconnect(self):
         current = self.open_fd()
-        for _ in range(10):
-            with self.assertRaises(NotConnectedError):
-                c = yield from ConnectionWrapper.create(
+        c = yield from ConnectionWrapper.create(
                         auto_reconnect=True,
                         timeout=self.conn_wait,
                         connect_timeout=self.conn_wait)
+
+        for _ in range(10):
+            with self.assertRaises(NotConnectedError):
                 yield from c.get('key1')
             yield from asyncio.sleep(1.0)
             # реконнект
-            self.assertEqual(self.open_fd(), current)
+            self.assertEqual(self.open_fd(), current + 1)
 
     @async
     def testPoolWrapperStable(self):
@@ -337,11 +339,14 @@ class RedisStoppedTestCase(FDMixin, TestCase):
 
     @async
     def testPoolWrapperReconnect(self):
-        current = self.open_fd()
-        for _ in range(20):
-            c = yield from PoolWrapper.create(auto_reconnect=True,
+        c = yield from PoolWrapper.create(auto_reconnect=True,
                                               poolsize=self.poolsize,
                                               timeout=self.conn_wait,
                                               connection_timeout=self.conn_wait)
+        current = self.open_fd()
+        for _ in range(20):
+            print(self.open_fd())
             self.assertEqual(self.open_fd(), current)
-            self.assertEqual(c.connections_connected, 0)
+            with self.assertRaises(NotConnectedError):
+                yield from c.get('key1')
+            yield from asyncio.sleep(1.0)
