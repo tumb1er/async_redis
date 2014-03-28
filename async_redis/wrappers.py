@@ -216,7 +216,7 @@ class ConnectionWrapper(Connection):
         connection._loop = loop
         connection._retry_interval = .5
 
-        connection._connect_timeout = timeout
+        connection._connect_timeout = connect_timeout
         connection._timeout = timeout
 
         # Create protocol instance
