@@ -9,6 +9,7 @@ from unittest import TestCase
 import asyncio
 from asyncio_redis import Connection, NotConnectedError, Pool
 import asyncio_redis
+import resource
 
 from tests.base import async
 from async_redis.wrappers import ConnectionWrapper, PoolWrapper
@@ -141,7 +142,7 @@ class ConnectionTestCase(FDMixin, TestCase):
     @async
     def testPoolWrapperTimeoutReconnect(self):
         c = yield from PoolWrapper.create(timeout=self.cmd_wait,
-                                          connection_timeout=self.conn_wait,
+                                          connect_timeout=self.conn_wait,
                                           poolsize=self.poolsize,
                                           auto_reconnect=True)
         current = self.open_fd()
@@ -239,23 +240,24 @@ class RedisNotRunningTestCase(FDMixin, TestCase):
             c = yield from PoolWrapper.create(auto_reconnect=False,
                                           poolsize=self.poolsize,
                                           timeout=self.conn_wait,
-                                          connection_timeout=self.conn_wait)
+                                          connect_timeout=self.conn_wait)
             self.assertEqual(self.open_fd(), current)
             self.assertEqual(c.connections_connected, 0)
 
     @async
     def testPoolWrapperReconnect(self):
         current = self.open_fd()
-        for _ in range(20):
+        for i in range(200000):
             # создается пул с 0 доступных соединений
             c = yield from PoolWrapper.create(auto_reconnect=True,
                                               poolsize=self.poolsize,
                                               timeout=self.conn_wait,
-                                              connection_timeout=self.conn_wait)
+                                              connect_timeout=self.conn_wait)
             yield from asyncio.sleep(self.sleep)
-            print(self.open_fd())
-            self.assertEqual(self.open_fd(), current)
-            self.assertEqual(c.connections_connected, 0)
+            # self.assertEqual(self.open_fd(), current)
+            # self.assertEqual(c.connections_connected, 0)
+            if i % 1000 == 0:
+                print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
 
 
 class RedisStoppedTestCase(FDMixin, TestCase):
@@ -368,7 +370,7 @@ class RedisStoppedTestCase(FDMixin, TestCase):
         c = yield from PoolWrapper.create(auto_reconnect=False,
                                       poolsize=self.poolsize,
                                       timeout=self.conn_wait,
-                                      connection_timeout=self.conn_wait)
+                                      connect_timeout=self.conn_wait)
         current = self.open_fd()
         for i in range(20):
             print(self.open_fd())
@@ -383,14 +385,16 @@ class RedisStoppedTestCase(FDMixin, TestCase):
         c = yield from PoolWrapper.create(auto_reconnect=True,
                                               poolsize=self.poolsize,
                                               timeout=self.conn_wait,
-                                              connection_timeout=self.conn_wait)
+                                              connect_timeout=self.conn_wait)
         current = self.open_fd()
-        for _ in range(20):
-            print(self.open_fd())
-            self.assertEqual(self.open_fd(), current)
+        for i in range(200000):
+            #self.assertEqual(self.open_fd(), current)
             with self.assertRaises(NotConnectedError):
                 yield from c.get('key1')
             yield from asyncio.sleep(self.sleep)
+            if i % 1000 == 0:
+                print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+
 
 
 class NoRouteTestCase(FDMixin, TestCase):
@@ -492,7 +496,7 @@ class NoRouteTestCase(FDMixin, TestCase):
                                           auto_reconnect=False,
                                       poolsize=self.poolsize,
                                       timeout=self.conn_wait,
-                                      connection_timeout=self.conn_wait)
+                                      connect_timeout=self.conn_wait)
         current = self.open_fd()
         for i in range(20):
             print(self.open_fd())
@@ -507,11 +511,12 @@ class NoRouteTestCase(FDMixin, TestCase):
                                           auto_reconnect=True,
                                               poolsize=self.poolsize,
                                               timeout=self.conn_wait,
-                                              connection_timeout=self.conn_wait)
+                                              connect_timeout=self.conn_wait)
         current = self.open_fd()
-        for _ in range(20):
-            print(self.open_fd())
-            self.assertEqual(self.open_fd(), current)
+        for i in range(200000):
+            # self.assertEqual(self.open_fd(), current)
             with self.assertRaises(NotConnectedError):
                 yield from c.get('key1')
             yield from asyncio.sleep(self.sleep)
+            if i % 1000 == 0:
+                print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)

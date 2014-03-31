@@ -2,7 +2,7 @@ from distutils.core import setup
 
 setup(
     name='async_redis',
-    version='0.1',
+    version='0.2',
     packages=['async_redis'],
     url='',
     license='Beer Licence',

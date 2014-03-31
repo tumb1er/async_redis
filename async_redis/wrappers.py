@@ -117,12 +117,12 @@ class PoolWrapper(Pool):
     @asyncio.coroutine
     def create(cls, host='localhost', port=6379, password=None, db=0,
                encoder=None, poolsize=1, auto_reconnect=True, loop=None,
-               timeout=1, connection_timeout=1):
+               timeout=1, connect_timeout=1):
         pool = cls()
         pool._host = host
         pool._port = port
         pool._poolsize = poolsize
-        pool._connect_timeout = connection_timeout
+        pool._connect_timeout = connect_timeout
         pool._timeout = timeout
         pool._loop = loop
         pool._auto_reconnect = auto_reconnect
@@ -182,13 +182,18 @@ class PoolWrapper(Pool):
         #     asyncio.Task(self._reconnect())
         pass
 
-    def __getattr__(self, item):
-        if item in self.__class__._pool_wrapper_fields:
-            return object.__getattribute__(self, item)
-        try:
-            return super().__getattr__(item)
-        except:
-            pass
+    def close(self):
+        for c in self._connections:
+            if c.transport:
+                c.transport.close()
+
+    # def __getattr__(self, item):
+    #     if item in self.__class__._pool_wrapper_fields:
+    #         return object.__getattribute__(self, item)
+    #     try:
+    #         return super().__getattr__(item)
+    #     except:
+    #         raise
 
 
 @timeout_aware_conn
@@ -291,7 +296,10 @@ class ConnectionWrapper(Connection):
             pass
             raise
 
-
+    def close(self):
+        if self.transport:
+            self.transport.close()
+        self.protocol._connection_lost_callback = None
 
     @asyncio.coroutine
     def _reconnect(self):
