@@ -11,7 +11,7 @@ class Connections:
     instance = None
 
 
-    def __init__(self, redis_creds: dict):
+    def __init__(self, **redis_creds):
         """
         @param redis_creds:
             Словарь настроек коннектов к редису в виде:
@@ -23,7 +23,21 @@ class Connections:
                 connect_timeout:
                 poolsize:
             }
+
+            или просто настройки единственного коннекта:
+
+            {
+                host:
+                port:
+                db:
+                timeout:
+                connect_timeout:
+                poolsize:
+            }
         """
+        if 'host' in redis_creds:
+            redis_creds = {'default': redis_creds}
+
         if self.instance is not None:
             self.__conn_cache = self.instance.__conn_cache
             self.__settings = self.instance.__settings
