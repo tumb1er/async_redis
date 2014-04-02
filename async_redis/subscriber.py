@@ -1,107 +1,80 @@
 # coding: utf-8
 
 # $Id: $
-from logging import getLogger
 import asyncio
 import asyncio_redis
-from async_redis import errors
+from async_redis import ConnectionWrapper
 
 
-class ReconnectingSubscriber:
-    """ Класс, отвечающий за подписку на сообщения из Redis и
-    инициацию процесса перегрузки конфига."""
-    logger = getLogger('%s.%s' % (__name__, "ReconnectingSubscriber"))
+class Subscriber:
+    """ Redis PUB/SUB client with connect timeout. """
 
-    def __init__(self, channels, callback, redis_factory, timeout=1,
-                 pubsub_timeout=10):
-        self.redis_factory = redis_factory
+    def __init__(self, channels, callback, host='localhost', port=6379,
+                 timeout=1, pubsub_timeout=60):
+        self.connection = None
+        self.host = host
+        self.port = port
         self.callback = callback
         self.channels = channels
         self.pubsub = None
-        self.exception_sent = False
         self.timeout = timeout
         self.pubsub_timeout = pubsub_timeout
 
     @asyncio.coroutine
-    def subscribe(self):
+    def _subscribe(self):
         """ Открывает соединение с Redis для обработки PUB/SUB.
 
         @return: флаг успешности подписки.
         """
 
-        try:
-            self.logger.debug("connecting to redis")
-            self.connection = yield from self.redis_factory
-            self.logger.debug("init pubsub")
-            self.pubsub = yield from self.connection.start_subscribe()
-            self.logger.debug("subscribing")
-            yield from self.pubsub.subscribe(self.channels)
-            self.logger.debug("subscribed")
-            self.exception_sent = False
-            return True
-        except Exception:
-            if not self.exception_sent:
-                self.logger.exception("can't subscribe")
-            self.exception_sent = True
-            return False
+        self.connection = yield from ConnectionWrapper.create(
+            host=self.host, port=self.port, auto_reconnect=False)
+        self.pubsub = yield from self.connection.start_subscribe()
+        yield from self.pubsub.subscribe(self.channels)
 
     @asyncio.coroutine
-    def run_once(self):
-        self.connected()
+    def _process_message(self):
+        if not self.pubsub:
+            raise asyncio_redis.NotConnectedError()
         reply = yield from self.pubsub.next_published()
-        self.logger.debug("got event %s" % reply)
         command = reply.value
-        coro_or_none = self.callback(command)
+        coro_or_none = self.callback(reply.channel, command)
         if asyncio.iscoroutine(coro_or_none):
             yield from coro_or_none
 
-    def close_pubsub(self):
+    def close(self):
         try:
-            self.pubsub.protocol.transport.close()
-        except:
-            pass
+            self.connection.close()
         finally:
+            self.connection = None
             self.pubsub = None
 
+    @asyncio.coroutine
     def connect(self):
         task = None
-        subscribed = False
         try:
-            task = asyncio.Task(self.subscribe())
-            subscribed = yield from asyncio.wait_for(
+            task = asyncio.Task(self._subscribe())
+            yield from asyncio.wait_for(
                 task, timeout=self.pubsub_timeout)
         except asyncio.TimeoutError:
-            if task:
-                task.cancel()
-        finally:
-            self.close_pubsub()
-        return subscribed
+            task.cancel()
+            self.close()
+            raise asyncio_redis.NotConnectedError()
 
-    def message_loop(self):
+    @asyncio.coroutine
+    def _message_loop(self):
         connected = True
         try:
-            # self.logger.debug("wait for message")
-
             yield from asyncio.wait_for(
-                self.run_once(), timeout=self.pubsub_timeout)
+                self._process_message(), timeout=self.pubsub_timeout)
         except asyncio.TimeoutError:
-            try:
-                if self.pubsub is None:
-                    raise asyncio_redis.NotConnectedError()
-                coro = self.pubsub.subscribe(self.channels)
-                yield from asyncio.wait_for(
-                    coro, timeout=self.pubsub_timeout)
-            except errors.connection_errors:
-                self.send_error("pubsub check failed")
-                self.close_pubsub()
-                connected = False
-        except Exception:
-            self.send_error("got exception in pubsub loop")
+            # FIXME: no way to ping pubsub network status on today.
+            self.close()
             connected = False
         return connected
 
     @asyncio.coroutine
-    def __call__(self):
+    def run_forever(self):
         """ Основной цикл работы обработчика.
 
         В бесконечном цикле:
@@ -109,23 +82,9 @@ class ReconnectingSubscriber:
         2) В еще одном бесконечном цикле обрабатывает полученные сообщения
         """
         while True:
-            self.logger.debug("Start sub")
-            subscribed = yield from self.connect()
-
-            if not subscribed:
+            try:
+                yield from self.connect()
+                while True:
+                    yield from self._message_loop()
+            except asyncio_redis.NotConnectedError:
                 yield from asyncio.sleep(self.pubsub_timeout)
-                continue
-            self.logger.debug("listening to channels")
-            connected = True
-            while connected:
-                connected = yield from self.message_loop()
-            self.logger.debug("got break in msg loop")
-
-    def connected(self):
-        self.exception_sent = False
-
-    def send_error(self, message):
-        if self.exception_sent:
-            return
-        self.exception_sent = True
-        self.logger.exception(message)
