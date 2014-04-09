@@ -20,14 +20,12 @@ def timeout_aware_pool(cls):
         @asyncio.coroutine
         @functools.wraps(cmd)
         def wrapper(pool, *args, **kwargs):
+            pool._cleanup_connections()
             # восстанавливаем число соединений до poolsize
             yield from pool._reconnect()
             # выбираем свободное соединение
             connection = pool._get_free_connection()
             if connection is None:
-                # нет свободных, вызываем процесс очистки соединений и
-                # возбуждаем ошибку
-                pool._cleanup_connections()
                 raise NotConnectedError()
 
             # вызываем команду редиса
@@ -108,6 +106,7 @@ class PoolWrapper(Pool):
     _pool_wrapper_fields = (
         '_reconnect',
         '_cleanup_connections',
+        '_pending_connections',
         '_timeout',
         '_connect_timeout',
         '_loop'
@@ -164,9 +163,11 @@ class PoolWrapper(Pool):
     @asyncio.coroutine
     def _reconnect(self):
         tasks = []
-        for i in range(len(self._connections) + len(self._pending_connections), self._poolsize):
+        for i in range(len(self._connections) + len(self._pending_connections),
+                       self._poolsize):
             task = asyncio.Task(self._connection_factory())
             tasks.append(task)
+        tasks.extend(self._pending_connections)
         if tasks:
             yield from asyncio.wait(tasks, timeout=self._connect_timeout)
             # if pending:
@@ -174,26 +175,21 @@ class PoolWrapper(Pool):
             #         task.set_exception(NotConnectedError())
 
     def _cleanup_connections(self):
-        # def is_connected(c):
-        #     return c.protocol.is_connected
-        # # is_connected = lambda c: c.protocol.is_connected
-        # self._connections = list(filter(is_connected, self._connections))
-        # if self._auto_reconnect:
-        #     asyncio.Task(self._reconnect())
-        pass
+        def is_connected(c):
+            return c.protocol.is_connected
+        self._connections = list(filter(is_connected, self._connections))
+        if self._auto_reconnect:
+            asyncio.Task(self._reconnect())
 
     def close(self):
         for c in self._connections:
             if c.transport:
                 c.transport.close()
 
-    # def __getattr__(self, item):
-    #     if item in self.__class__._pool_wrapper_fields:
-    #         return object.__getattribute__(self, item)
-    #     try:
-    #         return super().__getattr__(item)
-    #     except:
-    #         raise
+    def __getattr__(self, item):
+        if item in PoolWrapper._pool_wrapper_fields:
+            return object.__getattribute__(self, item)
+        return super().__getattr__(item)
 
 
 @timeout_aware_conn
@@ -244,8 +240,8 @@ class ConnectionWrapper(Connection):
 
     @asyncio.coroutine
     def create_connection(self, protocol_factory, host, port):
-        f1 = self._loop.getaddrinfo(
-                host, port)
+        f1 = self._loop.getaddrinfo(host, port, family=0,
+                                    type=socket.SOCK_STREAM, proto=0, flags=0)
         yield from asyncio.wait([f1], loop=self._loop)
         infos = f1.result()
         if not infos:
