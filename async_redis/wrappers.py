@@ -57,8 +57,9 @@ def timeout_aware_conn(cls):
             timeout = connection._timeout
             closer = None
             if timeout:
-                closer = connection._loop.call_later(timeout,
-                                                     protocol.transport.close)
+                def close_conn():
+                    protocol.transport.close()
+                closer = connection._loop.call_later(timeout, close_conn)
             result = yield from task
             if closer:
                 closer.cancel()
