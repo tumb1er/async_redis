@@ -1,6 +1,7 @@
 # coding: utf-8
 
 # $Id: $
+import functools
 
 import asyncio
 from async_redis import PoolWrapper, ConnectionWrapper
@@ -53,12 +54,23 @@ class Connections:
             klass = PoolWrapper
         else:
             klass = ConnectionWrapper
+
         if alias not in self.__conn_cache:
-            self.__conn_cache[alias] = asyncio.Task(klass.create(**conn_kwargs))
+            # создаем новое соединение
+            future = asyncio.Task(klass.create(**conn_kwargs))
+            future.add_done_callback(
+                functools.partial(self.register_connection, alias=alias))
+            self.__conn_cache[alias] = future
+        # есть коннект к кэше
         if not isinstance(self.__conn_cache[alias], asyncio.Task):
             return self.__conn_cache[alias]
-        self.__conn_cache[alias] = yield from self.__conn_cache[alias]
-        return self.__conn_cache[alias]
+        # в кэше лежит future, т.е. соединение в процессе открытия.
+        conn = yield from asyncio.wait_for(self.__conn_cache[alias], None)
+        return conn
+
+    def register_connection(self, future, alias):
+        conn = future.result()
+        self.__conn_cache[alias] = conn
 
     def close_connection(self, alias='default'):
         connection = self.__conn_cache.pop(alias, None)

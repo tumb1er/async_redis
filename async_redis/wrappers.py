@@ -20,34 +20,16 @@ def timeout_aware_pool(cls):
         @asyncio.coroutine
         @functools.wraps(cmd)
         def wrapper(pool, *args, **kwargs):
-            pool._cleanup_connections()
-            # восстанавливаем число соединений до poolsize
-            yield from pool._reconnect()
             # выбираем свободное соединение
             connection = pool._get_free_connection()
-            if connection is None:
+            if not connection:
                 raise NotConnectedError()
-
+            # пробуем переустановить соединение
+            reconnect = object.__getattribute__(connection, '_reconnect')
+            yield from reconnect()
             # вызываем команду редиса
             task = cmd(connection.protocol, *args, **kwargs)
-            try:
-                # при необходимости, оборачиваем в wait_for
-                timeout = pool._timeout
-                if timeout is None:
-                    result = yield from task
-                else:
-                    result = yield from asyncio.wait_for(
-                        task, pool._timeout, loop=pool._loop)
-            except (asyncio.futures.TimeoutError, NotConnectedError):
-                # произошел таймаут, ошибка коннекта:
-                # закрываем соединение на транспортном уровне
-                try:
-                    if connection.protocol.transport is not None:
-                        connection.protocol.transport.close()
-                except Exception:
-                    logging.exception(
-                        "Error while handling redis operation timeout")
-                raise NotConnectedError()
+            result = yield from task
             return result
 
         return wrapper
@@ -90,7 +72,7 @@ def timeout_aware_conn(cls):
     return cls
 
 
-# @timeout_aware_pool
+#@timeout_aware_pool
 class PoolWrapper(Pool):
     @classmethod
     @asyncio.coroutine
