@@ -3,9 +3,9 @@
 import functools
 import logging
 import socket
+
 import asyncio
 from asyncio.log import logger
-
 from asyncio_redis.exceptions import NotConnectedError
 from asyncio_redis.protocol import _all_commands, RedisProtocol
 from asyncio_redis import Connection, Pool
@@ -71,25 +71,15 @@ def timeout_aware_conn(cls):
             # Выполняем команду протокола Redis
             protocol = connection.protocol
             task = cmd(protocol, *args, **kwargs)
-            try:
-                # При необходимости оборачиваем в wait_for
-                timeout = connection._timeout
-                if timeout is None:
-                    result = yield from task
-                else:
-                    result = yield from asyncio.wait_for(
-                        task, timeout, loop=connection._loop)
-            except (asyncio.futures.TimeoutError, NotConnectedError) as e:
-                # При возникновении ошибки закрываем соединение на
-                # транспортном уровне.
-                try:
-                    if protocol.transport is not None:
-                        asyncio.get_event_loop().call_soon(
-                            protocol.transport.close)
-                except Exception:
-                    logging.exception(
-                        "Error while handling redis operation timeout")
-                raise NotConnectedError()
+            # При необходимости оборачиваем в wait_for
+            timeout = connection._timeout
+            closer = None
+            if timeout:
+                closer = connection._loop.call_later(timeout,
+                                                     protocol.transport.close)
+            result = yield from task
+            if closer:
+                closer.cancel()
             return result
 
         return wrapper
@@ -100,96 +90,29 @@ def timeout_aware_conn(cls):
     return cls
 
 
-@timeout_aware_pool
+# @timeout_aware_pool
 class PoolWrapper(Pool):
-
-    _pool_wrapper_fields = (
-        '_reconnect',
-        '_cleanup_connections',
-        '_pending_connections',
-        '_timeout',
-        '_connect_timeout',
-        '_loop'
-    )
-
     @classmethod
     @asyncio.coroutine
     def create(cls, host='localhost', port=6379, password=None, db=0,
                encoder=None, poolsize=1, auto_reconnect=True, loop=None,
-               timeout=1, connect_timeout=1):
-        pool = cls()
-        pool._host = host
-        pool._port = port
-        pool._poolsize = poolsize
-        pool._connect_timeout = connect_timeout
-        pool._timeout = timeout
-        pool._loop = loop
-        pool._auto_reconnect = auto_reconnect
-        pool._pending_connections = []
-
-        # Фабрика для создания новых соединений
-        @asyncio.coroutine
-        def connection_factory():
-            task = Connection.create(
-                host=host,
-                port=port,
-                password=password,
-                db=db,
-                encoder=encoder,
-                auto_reconnect=auto_reconnect,
-                loop=loop,
-                # timeout=timeout,
-                # connect_timeout=connection_timeout,
-                # connection_lost_callback=pool._cleanup_connections)
-            )
-            task = asyncio.Task(task)
-            pool._pending_connections.append(task)
-            task.add_done_callback(pool._register_connection)
-            return (yield from asyncio.wait_for(task, None))
-
-        pool._connection_factory = connection_factory
+               timeout=None, connect_timeout=None):
+        self = cls()
+        self._host = host
+        self._port = port
+        self._poolsize = poolsize
 
         # Create connections
-        pool._connections = []
+        self._connections = []
 
-        yield from pool._reconnect()
+        for i in range(poolsize):
+            connection = yield from ConnectionWrapper.create(
+                host=host, port=port, password=password, db=db, encoder=encoder,
+                auto_reconnect=auto_reconnect, loop=loop,
+                timeout=timeout, connect_timeout=connect_timeout)
+            self._connections.append(connection)
 
-        return pool
-
-    def _register_connection(self, task):
-        self._pending_connections.remove(task)
-        self._connections.append(task.result())
-
-    @asyncio.coroutine
-    def _reconnect(self):
-        tasks = []
-        for i in range(len(self._connections) + len(self._pending_connections),
-                       self._poolsize):
-            task = asyncio.Task(self._connection_factory())
-            tasks.append(task)
-        tasks.extend(self._pending_connections)
-        if tasks:
-            yield from asyncio.wait(tasks, timeout=self._connect_timeout)
-            # if pending:
-            #     for task in pending:
-            #         task.set_exception(NotConnectedError())
-
-    def _cleanup_connections(self):
-        def is_connected(c):
-            return c.protocol.is_connected
-        self._connections = list(filter(is_connected, self._connections))
-        if self._auto_reconnect:
-            asyncio.Task(self._reconnect())
-
-    def close(self):
-        for c in self._connections:
-            if c.transport:
-                c.transport.close()
-
-    def __getattr__(self, item):
-        if item in PoolWrapper._pool_wrapper_fields:
-            return object.__getattribute__(self, item)
-        return super().__getattr__(item)
+        return self
 
 
 @timeout_aware_conn
@@ -276,10 +199,11 @@ class ConnectionWrapper(Connection):
                                         loop=self._loop)
 
             task = self._loop.create_connection(protocol_factory,
-                                                             sock=sock)
+                                                sock=sock)
             yield from asyncio.wait_for(task, timeout=self._connect_timeout,
                                         loop=self._loop)
-        except (asyncio.futures.TimeoutError, IOError, asyncio.futures.CancelledError) as e:
+        except (asyncio.futures.TimeoutError, IOError,
+                asyncio.futures.CancelledError) as e:
 
             try:
                 self._loop.remove_writer(sock.fileno())
@@ -303,42 +227,44 @@ class ConnectionWrapper(Connection):
         while True:
             try:
                 logger.log(logging.INFO, 'Connecting to redis')
-                yield from self.create_connection(lambda:self.protocol, self.host, self.port)
+                yield from self.create_connection(lambda: self.protocol,
+                                                  self.host, self.port)
                 self._reset_retry_interval()
                 return
             except OSError as e:
                 # Sleep and try again
                 self._increase_retry_interval()
                 interval = self._get_retry_interval()
-                logger.log(logging.INFO, 'Connecting to redis failed. Retrying in %i seconds' % interval)
+                logger.log(logging.INFO,
+                           'Connecting to redis failed. Retrying in %i seconds' % interval)
                 yield from asyncio.sleep(interval)
             except Exception as e:
                 raise
 
-        #
-        #
-        # task = super()._reconnect()
-        # #try:
-        # timeout = self._connect_timeout or 1
-        # done, pending = yield from asyncio.wait([task], timeout=timeout, loop=self._loop)
-        # if pending:
-        #     task = pending.pop()
-        #     task.set_exception(NotConnectedError())
-        #     if self.transport is not None:
-        #         self.transport.close()
-        #     raise NotConnectedError()
+                #
+                #
+                # task = super()._reconnect()
+                # #try:
+                # timeout = self._connect_timeout or 1
+                # done, pending = yield from asyncio.wait([task], timeout=timeout, loop=self._loop)
+                # if pending:
+                #     task = pending.pop()
+                #     task.set_exception(NotConnectedError())
+                #     if self.transport is not None:
+                #         self.transport.close()
+                #     raise NotConnectedError()
 
 
 
 
-        # except (asyncio.TimeoutError, NotConnectedError):
-        #     try:
-        #         if self.transport is not None:
-        #             self.transport.close()
-        #     except Exception:
-        #         logging.exception(
-        #             "Error while handling redis reconnect timeout")
-        #     raise NotConnectedError()
+                # except (asyncio.TimeoutError, NotConnectedError):
+                #     try:
+                #         if self.transport is not None:
+                #             self.transport.close()
+                #     except Exception:
+                #         logging.exception(
+                #             "Error while handling redis reconnect timeout")
+                #     raise NotConnectedError()
 
     def __getattr__(self, item):
         if item not in ('_timeout', '_connect_timeout', '_loop', 'transport'):

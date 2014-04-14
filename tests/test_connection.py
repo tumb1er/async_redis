@@ -2,14 +2,12 @@
 
 # $Id: $
 import os
-import socket
 import subprocess
 from unittest import TestCase
 
 import asyncio
 from asyncio_redis import Connection, NotConnectedError, Pool
 import asyncio_redis
-import resource
 
 from tests.base import async
 from async_redis.wrappers import ConnectionWrapper, PoolWrapper
@@ -237,27 +235,29 @@ class RedisNotRunningTestCase(FDMixin, TestCase):
         current = self.open_fd()
         for _ in range(20):
             # создается пул с 0 доступных соединений
-            c = yield from PoolWrapper.create(auto_reconnect=False,
+            with self.assertRaises(NotConnectedError):
+                c = yield from PoolWrapper.create(auto_reconnect=False,
                                           poolsize=self.poolsize,
                                           timeout=self.conn_wait,
                                           connect_timeout=self.conn_wait)
             self.assertEqual(self.open_fd(), current)
-            self.assertEqual(c.connections_connected, 0)
 
     @async
     def testPoolWrapperReconnect(self):
         current = self.open_fd()
-        for i in range(200000):
+        for i in range(20):
+            print(self.open_fd())
             # создается пул с 0 доступных соединений
-            c = yield from PoolWrapper.create(auto_reconnect=True,
-                                              poolsize=self.poolsize,
-                                              timeout=self.conn_wait,
-                                              connect_timeout=self.conn_wait)
+            with self.assertRaises(NotConnectedError):
+                c = yield from PoolWrapper.create(auto_reconnect=True,
+                                                  poolsize=self.poolsize,
+                                                  timeout=self.conn_wait,
+                                                  connect_timeout=self.conn_wait)
             yield from asyncio.sleep(self.sleep)
             # self.assertEqual(self.open_fd(), current)
             # self.assertEqual(c.connections_connected, 0)
-            if i % 1000 == 0:
-                print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+            # if i % 1000 == 0:
+            #     print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
 
 
 class RedisStoppedTestCase(FDMixin, TestCase):
@@ -387,14 +387,12 @@ class RedisStoppedTestCase(FDMixin, TestCase):
                                               timeout=self.conn_wait,
                                               connect_timeout=self.conn_wait)
         current = self.open_fd()
-        for i in range(200000):
+        for i in range(20):
             #self.assertEqual(self.open_fd(), current)
             with self.assertRaises(NotConnectedError):
                 yield from c.get('key1')
             yield from asyncio.sleep(self.sleep)
-            if i % 1000 == 0:
-                print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-
+            print(self.open_fd())
 
 
 class NoRouteTestCase(FDMixin, TestCase):
@@ -415,6 +413,7 @@ class NoRouteTestCase(FDMixin, TestCase):
             with self.assertRaises(asyncio.futures.TimeoutError):
                 yield from asyncio.wait_for(task, timeout=self.conn_wait)
             self.assertEqual(self.open_fd(), current + i + 1)
+            print(self.open_fd())
             yield from asyncio.sleep(self.conn_wait)
 
     @async
@@ -425,6 +424,7 @@ class NoRouteTestCase(FDMixin, TestCase):
             with self.assertRaises(asyncio.futures.TimeoutError):
                 yield from asyncio.wait_for(task, timeout=self.conn_wait)
             self.assertEqual(self.open_fd(), current + i + 1)
+            print(self.open_fd())
             yield from asyncio.sleep(self.sleep)
 
     @async
@@ -492,31 +492,33 @@ class NoRouteTestCase(FDMixin, TestCase):
 
     @async
     def testPoolWrapperStable(self):
-        c = yield from PoolWrapper.create(host=self.host,
-                                          auto_reconnect=False,
-                                      poolsize=self.poolsize,
-                                      timeout=self.conn_wait,
-                                      connect_timeout=self.conn_wait)
         current = self.open_fd()
         for i in range(20):
-            print(self.open_fd())
             with self.assertRaises(NotConnectedError):
-                yield from c.get('key1')
+                c = yield from PoolWrapper.create(host=self.host,
+                                              auto_reconnect=False,
+                                              poolsize=self.poolsize,
+                                              timeout=self.conn_wait,
+                                              connect_timeout=self.conn_wait)
+            print(self.open_fd())
+            # with self.assertRaises(NotConnectedError):
+            #     yield from c.get('key1')
             yield from asyncio.sleep(self.sleep)
             self.assertEqual(self.open_fd(), current)
 
     @async
     def testPoolWrapperReconnect(self):
-        c = yield from PoolWrapper.create(host=self.host,
-                                          auto_reconnect=True,
-                                              poolsize=self.poolsize,
-                                              timeout=self.conn_wait,
-                                              connect_timeout=self.conn_wait)
         current = self.open_fd()
-        for i in range(200000):
-            # self.assertEqual(self.open_fd(), current)
+        for i in range(20):
             with self.assertRaises(NotConnectedError):
-                yield from c.get('key1')
+                c = yield from PoolWrapper.create(host=self.host,
+                                                  auto_reconnect=True,
+                                                  poolsize=self.poolsize,
+                                                  timeout=self.conn_wait,
+                                                  connect_timeout=self.conn_wait)
+
+            self.assertEqual(self.open_fd(), current + 1)
+            # with self.assertRaises(NotConnectedError):
+            #     yield from c.get('key1')
             yield from asyncio.sleep(self.sleep)
-            if i % 1000 == 0:
-                print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+            print(self.open_fd())
