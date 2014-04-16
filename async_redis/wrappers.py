@@ -22,10 +22,10 @@ def timeout_aware_conn(cls):
         def wrapper(connection, *args, **kwargs):
             # Выполняем команду протокола Redis
             task = cmd(connection.protocol, *args, **kwargs)
-            if not connection.protocol._is_connected:
-                reconnect = asyncio.Task(connection._reconnect())
-            elif connection._reconnect_task:
+            if connection._reconnect_task:
                 reconnect = connection._reconnect_task
+            elif not connection.protocol._is_connected:
+                reconnect = asyncio.Task(connection._reconnect())
             else:
                 reconnect = None
 
@@ -181,6 +181,9 @@ class ConnectionWrapper(Connection):
     @asyncio.coroutine
     def _reconnect(self):
         self._loop = self._loop or asyncio.get_event_loop()
+        if self._reconnect_task:
+            yield from asyncio.wait_for(self._reconnect_task, None)
+            return
         while True:
             try:
                 logger.log(logging.INFO, 'Connecting to redis')
@@ -188,7 +191,6 @@ class ConnectionWrapper(Connection):
                                                     self.host, self.port))
                 yield from asyncio.wait_for(self._reconnect_task, None)
                 self._reset_retry_interval()
-                self._reconnect_task = None
                 return
             except OSError as e:
                 # Sleep and try again
@@ -211,5 +213,6 @@ class ConnectionWrapper(Connection):
         print ("Connection made!")
         if self._connection_made_callback:
                 self._connection_made_callback()
+        self._reconnect_task = None
 
 
