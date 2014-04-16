@@ -4,7 +4,8 @@
 import functools
 
 import asyncio
-from async_redis import PoolWrapper, ConnectionWrapper
+from asyncio_redis import Connection
+from async_redis import ConnectionWrapper
 
 
 class Connections:
@@ -48,12 +49,16 @@ class Connections:
             self.__class__.instance = self
 
     @asyncio.coroutine
-    def get_connection(self, alias='default'):
+    def get_connection(self, alias='default', wrapped=True):
         conn_kwargs = self.__settings[alias]
-        if 'poolsize' in conn_kwargs:
-            klass = PoolWrapper
-        else:
+        # XXX
+        if wrapped:
             klass = ConnectionWrapper
+        else:
+            klass = Connection
+            wrapped_kwargs = 'timeout', 'connect_timeout', 'poolsize'
+            conn_kwargs = {k: v for k, v in conn_kwargs.items()
+                           if k not in wrapped_kwargs}
 
         if alias not in self.__conn_cache:
             # создаем новое соединение
