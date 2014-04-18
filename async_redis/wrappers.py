@@ -6,10 +6,10 @@ import socket
 
 import asyncio
 from asyncio.log import logger
-from asyncio_redis.exceptions import NotConnectedError
+from asyncio_redis.exceptions import NotConnectedError, ConnectionLostError
 from asyncio_redis.protocol import _all_commands, RedisProtocol
-from asyncio_redis import Connection, StatusReply, ConnectionLostError, \
-    PipelinedCall
+from asyncio_redis.replies import StatusReply
+from asyncio_redis import Connection
 
 
 def timeout_aware_conn(cls):
@@ -57,46 +57,6 @@ class MoreRedisProtocol(RedisProtocol):
         super().connection_made(transport)
         if self._connection_made_callback:
             self._connection_made_callback()
-
-    def connection_lost(self, exc):
-        if exc is None:
-            self._reader.feed_eof()
-        else:
-            logger.info("Connection lost with exec: %s" % exc)
-            self._reader.set_exception(exc)
-
-        if self._reader_f:
-            self._reader_f.cancel()
-
-        self._is_connected = False
-        self.transport = None
-        self._reader = None
-        self._reader_f = None
-
-        # Raise exception on all waiting futures.
-        while self._queue:
-            f = self._queue.popleft()
-            if not f.cancelled():
-                f.set_exception(ConnectionLostError(exc))
-
-        logger.log(logging.INFO, 'Redis connection lost')
-
-        # Call connection_lost callback
-        if self._connection_lost_callback:
-            self._connection_lost_callback()
-
-    def _push_answer(self, answer):
-        """
-        Answer future at the queue.
-        """
-        f = self._queue.popleft()
-
-        if isinstance(answer, Exception):
-            f.set_exception(answer)
-        elif f.cancelled():
-            pass
-        else:
-            f.set_result(answer)
 
 
 class Pinger:
