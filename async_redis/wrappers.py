@@ -8,7 +8,8 @@ import asyncio
 from asyncio.log import logger
 from asyncio_redis.exceptions import NotConnectedError
 from asyncio_redis.protocol import _all_commands, RedisProtocol
-from asyncio_redis import Connection
+from asyncio_redis import Connection, StatusReply, ConnectionLostError, \
+    PipelinedCall
 
 
 def timeout_aware_conn(cls):
@@ -57,6 +58,33 @@ class MoreRedisProtocol(RedisProtocol):
         if self._connection_made_callback:
             self._connection_made_callback()
 
+    def connection_lost(self, exc):
+        if exc is None:
+            self._reader.feed_eof()
+        else:
+            logger.info("Connection lost with exec: %s" % exc)
+            self._reader.set_exception(exc)
+
+        if self._reader_f:
+            self._reader_f.cancel()
+
+        self._is_connected = False
+        self.transport = None
+        self._reader = None
+        self._reader_f = None
+
+        # Raise exception on all waiting futures.
+        while self._queue:
+            f = self._queue.popleft()
+            if not f.cancelled():
+                f.set_exception(ConnectionLostError(exc))
+
+        logger.log(logging.INFO, 'Redis connection lost')
+
+        # Call connection_lost callback
+        if self._connection_lost_callback:
+            self._connection_lost_callback()
+
     def _push_answer(self, answer):
         """
         Answer future at the queue.
@@ -65,10 +93,31 @@ class MoreRedisProtocol(RedisProtocol):
 
         if isinstance(answer, Exception):
             f.set_exception(answer)
-        elif f.cancelled(): # Aga!
+        elif f.cancelled():
             pass
         else:
             f.set_result(answer)
+
+
+class Pinger:
+    def __init__(self, connection, interval=1):
+        self.connection = connection
+        self.interval = interval
+        self.started = True
+        asyncio.Task(self.ping_loop())
+
+    @asyncio.coroutine
+    def ping_loop(self):
+        while self.started:
+            yield from asyncio.sleep(self.interval)
+            try:
+                result = yield from self.connection.ping()
+                if not isinstance(result, StatusReply):
+                    raise asyncio.InvalidStateError("Invalid ping reply type")
+                if result.status != "pong":
+                    raise ValueError("Invalid ping reply status")
+            except Exception as e:
+                self.connection.close()
 
 
 @timeout_aware_conn
@@ -203,16 +252,16 @@ class ConnectionWrapper(Connection):
                 raise
 
     def _connection_lost(self):
-        print ("Connection lost!")
         if self._connection_lost_callback:
                 self._connection_lost_callback()
+        self.pinger.started = False
         if self._auto_reconnect:
             asyncio.Task(self._reconnect())
 
     def _connection_made(self):
-        print ("Connection made!")
         if self._connection_made_callback:
                 self._connection_made_callback()
         self._reconnect_task = None
+        self.pinger = Pinger(self)
 
 
