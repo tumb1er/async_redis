@@ -74,7 +74,7 @@ class Pinger:
                 result = yield from self.connection.ping()
                 if not isinstance(result, StatusReply):
                     raise asyncio.InvalidStateError("Invalid ping reply type")
-                if result.status != "pong":
+                if result.status != "PONG":
                     raise ValueError("Invalid ping reply status")
             except Exception as e:
                 self.connection.close()
