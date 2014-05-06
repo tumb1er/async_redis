@@ -64,7 +64,12 @@ class Pinger:
         self.connection = connection
         self.interval = interval
         self.started = True
-        asyncio.Task(self.ping_loop())
+        self.__task = asyncio.Task(self.ping_loop())
+
+    def stop(self):
+        if self.__task:
+            self.__task.cancel()
+        self.__task = None
 
     @asyncio.coroutine
     def ping_loop(self):
@@ -183,6 +188,8 @@ class ConnectionWrapper(Connection):
             raise
 
     def close(self):
+        if self.pinger:
+            self.pinger.stop()
         if self.transport:
             self.transport.close()
         self.protocol._connection_lost_callback = None

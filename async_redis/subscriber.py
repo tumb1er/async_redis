@@ -2,7 +2,9 @@
 
 # $Id: $
 import asyncio
+
 import asyncio_redis
+
 from async_redis import ConnectionWrapper
 
 
@@ -10,7 +12,7 @@ class Subscriber:
     """ Redis PUB/SUB client with connect timeout. """
 
     def __init__(self, channels, callback, host='localhost', port=6379,
-                 timeout=1, pubsub_timeout=60):
+                 timeout=1, pubsub_timeout=2):
         self.connection = None
         self.host = host
         self.port = port
@@ -58,6 +60,7 @@ class Subscriber:
                 task, timeout=self.pubsub_timeout)
         except asyncio.TimeoutError:
             task.cancel()
+
             self.close()
             raise asyncio_redis.NotConnectedError()
 
