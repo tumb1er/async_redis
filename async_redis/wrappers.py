@@ -6,8 +6,8 @@ import socket
 
 import asyncio
 from asyncio.log import logger
-from asyncio_redis.exceptions import NotConnectedError, ConnectionLostError
-from asyncio_redis.protocol import _all_commands, RedisProtocol
+from asyncio_redis.exceptions import NotConnectedError
+from asyncio_redis.protocol import _all_commands, HiRedisProtocol
 from asyncio_redis.replies import StatusReply
 from asyncio_redis import Connection
 
@@ -44,11 +44,11 @@ def timeout_aware_conn(cls):
 
     for method in _all_commands:
         setattr(cls, method,
-                _timeout_aware_connection(getattr(RedisProtocol, method)))
+                _timeout_aware_connection(getattr(HiRedisProtocol, method)))
     return cls
 
 
-class MoreRedisProtocol(RedisProtocol):
+class MoreRedisProtocol(HiRedisProtocol):
     def __init__(self, connection_made_callback=None, **kwargs):
         super().__init__(**kwargs)
         self._connection_made_callback = connection_made_callback
@@ -90,7 +90,7 @@ class ConnectionWrapper(Connection):
     """ Обертка поверх обычного Connection Pool клиента редиса для более
     удобной смены реализации клиента (таймауты и т.п.)
     """
-    protocol = RedisProtocol
+    protocol = MoreRedisProtocol
 
     def __init__(self, host='localhost', port=6379, **kwargs):
         self.host = host
@@ -120,6 +120,7 @@ class ConnectionWrapper(Connection):
             password=password,
             db=db,
             encoder=encoder,
+            enable_typechecking = False,
             connection_lost_callback=connection._connection_lost,
             connection_made_callback=connection._connection_made)
 
