@@ -6,7 +6,8 @@ import socket
 
 import asyncio
 from asyncio.log import logger
-from asyncio_redis.exceptions import NotConnectedError
+import asyncio_redis
+from asyncio_redis.exceptions import NotConnectedError, Error
 from asyncio_redis.protocol import _all_commands, HiRedisProtocol
 from asyncio_redis.replies import StatusReply
 from asyncio_redis import Connection
@@ -81,6 +82,12 @@ class Pinger:
                     raise asyncio.InvalidStateError("Invalid ping reply type")
                 if result.status != "PONG":
                     raise ValueError("Invalid ping reply status")
+            except asyncio_redis.exceptions.Error as e:
+                # в режиме Pub/Sub такая ошибка это подтверждение
+                # корректной работы соединения.
+                if e.args[0] != "Cannot run command inside pubsub subscription.":
+                    raise
+
             except Exception as e:
                 self.connection.close()
 
