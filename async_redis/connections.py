@@ -70,7 +70,8 @@ class Connections:
         if not isinstance(self.__conn_cache[alias], asyncio.Task):
             return self.__conn_cache[alias]
         # в кэше лежит future, т.е. соединение в процессе открытия.
-        conn = yield from asyncio.wait_for(self.__conn_cache[alias], None)
+        timeout = conn_kwargs.get('connect_timeout')
+        conn = yield from asyncio.wait_for(self.__conn_cache[alias], timeout)
         return conn
 
     def register_connection(self, future, alias):
