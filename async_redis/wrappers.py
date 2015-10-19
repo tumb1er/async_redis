@@ -13,6 +13,11 @@ from asyncio_redis.replies import StatusReply
 from asyncio_redis import Connection
 
 
+def may_run(task):
+    """ Проверяет задачу asyncio.Task на предмет того, можно ли ее запустить."""
+    return task and not task.done()
+
+
 def timeout_aware_conn(cls):
     """ Декоратор, добавляющий таймауты для операций Redis
         для реализации Connection."""
@@ -31,9 +36,10 @@ def timeout_aware_conn(cls):
             else:
                 reconnect = None
 
-            if reconnect:
+            if may_run(reconnect):
                 try:
-                    yield from asyncio.wait_for(reconnect, connection._connect_timeout)
+                    yield from asyncio.wait_for(reconnect,
+                                                connection._connect_timeout)
                 except asyncio.TimeoutError:
                     raise NotConnectedError('reconnect timeout')
 
@@ -205,26 +211,26 @@ class ConnectionWrapper(Connection):
     @asyncio.coroutine
     def _reconnect(self):
         self._loop = self._loop or asyncio.get_event_loop()
-        if self._reconnect_task:
+        if may_run(self._reconnect_task):
             yield from asyncio.wait_for(self._reconnect_task, None)
             return
         while True:
             try:
                 logger.log(logging.INFO, 'Connecting to redis')
-                self._reconnect_task = asyncio.Task(self._create_connection(lambda: self.protocol,
-                                                    self.host, self.port))
+                self._reconnect_task = asyncio.Task(
+                    self._create_connection(lambda: self.protocol,
+                                            self.host, self.port))
                 yield from asyncio.wait_for(self._reconnect_task, None)
                 self._reset_retry_interval()
                 return
-            except OSError as e:
+            except OSError:
                 # Sleep and try again
                 self._increase_retry_interval()
                 interval = self._get_retry_interval()
                 logger.log(logging.INFO,
-                           'Connecting to redis failed. Retrying in %i seconds' % interval)
+                           'Connecting to redis failed. Retrying in %i seconds'
+                           % interval)
                 yield from asyncio.sleep(interval)
-            except Exception as e:
-                raise
 
     def _connection_lost(self):
         if self._connection_lost_callback:
